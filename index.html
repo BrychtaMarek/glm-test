@@ -103,6 +103,10 @@
   <section>
     <h2>Technický záznam</h2>
     <p class="muted" style="margin-top:0">Všechna data z měřáku v surové podobě. Pomůže nám, když něco nebude fungovat.</p>
+    <div class="row" style="margin-bottom:8px">
+      <button id="copy">Kopírovat záznam</button>
+      <span id="copied" class="muted"></span>
+    </div>
     <pre id="log"></pre>
   </section>
 </main>
@@ -188,69 +192,115 @@ function onNotify(event) {
   renderRows();
 }
 
-async function sendEnable() {
-  const c = state.char;
-  try {
-    if (c.properties.write && c.writeValueWithResponse) await c.writeValueWithResponse(ENABLE_CMD);
-    else if (c.writeValueWithoutResponse) await c.writeValueWithoutResponse(ENABLE_CMD);
-    else await c.writeValue(ENABLE_CMD);
-    log('→ ' + hex(ENABLE_CMD) + '  (aktivační příkaz)');
-  } catch (e) {
-    log('Chyba při odeslání aktivačního příkazu: ' + e.message);
-    try { await c.writeValueWithoutResponse(ENABLE_CMD); log('→ ' + hex(ENABLE_CMD) + '  (bez potvrzení)'); }
-    catch (e2) { log('Ani bez potvrzení to nešlo: ' + e2.message); }
+// Some browsers (e.g. Bluefy on iPhone) reject with plain strings or objects instead of Error.
+function errText(e) {
+  if (e == null) return 'neznámá chyba (prázdná)';
+  if (typeof e === 'string') return e;
+  const parts = [e.name, e.message, e.code, e.reason, e.description].filter(v => v !== undefined && v !== null && v !== '');
+  if (parts.length) return parts.join(': ');
+  try { const j = JSON.stringify(e); if (j && j !== '{}') return j; } catch (_) {}
+  const s = String(e);
+  if (s !== '[object Object]') return s;
+  const keys = Object.getOwnPropertyNames(e);
+  return 'chyba bez popisu' + (keys.length ? ' (' + keys.join(', ') + ')' : '') + ', typ ' + (e.constructor && e.constructor.name || typeof e);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function writeCmd(c, bytes) {
+  const p = c.properties || {};
+  const attempts = [];
+  if (c.writeValueWithResponse && p.write !== false) attempts.push(['s potvrzením', () => c.writeValueWithResponse(bytes)]);
+  if (c.writeValueWithoutResponse && p.writeWithoutResponse !== false) attempts.push(['bez potvrzení', () => c.writeValueWithoutResponse(bytes)]);
+  if (c.writeValue) attempts.push(['writeValue', () => c.writeValue(bytes)]);
+  for (const [label, fn] of attempts) {
+    try { await fn(); log('→ ' + hex(bytes) + `  (aktivační příkaz, ${label})`); return true; }
+    catch (e) { log(`Zápis ${label} selhal: ` + errText(e)); }
   }
+  return false;
+}
+
+async function sendEnable() {
+  const ok = await writeCmd(state.char, ENABLE_CMD);
+  if (!ok) log('Aktivační příkaz se nepodařilo odeslat. Zkus i tak měřit – některé měřáky posílají hodnoty i bez něj.');
 }
 
 async function connect() {
+  let step = 'start';
   try {
-    const opts = $('all').checked
+    if (!navigator.bluetooth || !navigator.bluetooth.requestDevice) throw 'navigator.bluetooth.requestDevice není k dispozici';
+    const all = $('all').checked;
+    const opts = all
       ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
       : { filters: [{ namePrefix: 'GLM' }, { services: [SERVICE_UUID] }], optionalServices: [SERVICE_UUID] };
+    step = 'výběr zařízení' + (all ? ' (všechna zařízení)' : ' (filtr GLM)');
+    log('Krok: ' + step);
     setStatus('Vyber měřák v okně prohlížeče…', 'muted');
     const device = await navigator.bluetooth.requestDevice(opts);
     state.device = device;
-    log(`Vybráno zařízení: ${device.name || '(bez názvu)'}`);
-    device.addEventListener('gattserverdisconnected', () => {
+    log(`Vybráno zařízení: ${device.name || '(bez názvu)'} id=${device.id || '-'}`);
+    if (device.addEventListener) device.addEventListener('gattserverdisconnected', () => {
       log('Měřák se odpojil.');
       setStatus('Odpojeno', 'warn');
       setConnected(false);
     });
+
+    step = 'připojení (GATT)';
+    log('Krok: ' + step);
     setStatus('Připojuji…', 'muted');
     const server = await device.gatt.connect();
     log('Připojeno k GATT.');
+
+    step = 'hledání služby Bosch';
+    log('Krok: ' + step);
     let service;
     try { service = await server.getPrimaryService(SERVICE_UUID); }
     catch (e) {
-      log('Služba Bosch nenalezena: ' + e.message);
-      setStatus('Zařízení nemá očekávanou Bluetooth službu – je to opravdu GLM 50 C?', 'bad');
-      device.gatt.disconnect();
+      log('Služba Bosch nenalezena: ' + errText(e));
+      try {
+        const list = await server.getPrimaryServices();
+        log('Dostupné služby: ' + (list.map(s => s.uuid).join(', ') || '(žádné)'));
+      } catch (e2) { log('Seznam služeb nelze načíst: ' + errText(e2)); }
+      setStatus('Zařízení nemá očekávanou Bluetooth službu – je to opravdu GLM 50 C? Pošli prosím technický záznam.', 'bad');
+      try { device.gatt.disconnect(); } catch (_) {}
       return;
     }
+
+    step = 'charakteristika';
+    log('Krok: ' + step);
     const ch = await service.getCharacteristic(CHAR_UUID);
     state.char = ch;
-    const p = ch.properties;
+    const p = ch.properties || {};
     log(`Charakteristika: notify=${p.notify} indicate=${p.indicate} write=${p.write} writeWithoutResponse=${p.writeWithoutResponse}`);
     ch.addEventListener('characteristicvaluechanged', onNotify);
+
+    step = 'zapnutí odběru hodnot';
+    log('Krok: ' + step);
     await ch.startNotifications();
     log('Odběr hodnot zapnut.');
-    await new Promise(r => setTimeout(r, 500));
+    await sleep(500);
+
+    step = 'aktivační příkaz';
+    log('Krok: ' + step);
     await sendEnable();
     setConnected(true);
     setStatus(`Připojeno: ${device.name || 'měřák'} – měř tlačítkem na měřáku`, 'ok');
   } catch (e) {
-    if (/globally disabled/i.test(e.message)) {
-      setStatus('Tento prohlížeč má Bluetooth pro webové stránky vypnuté. Otevři soubor v Google Chrome nebo Microsoft Edge (ne v Brave, Opeře ani v náhledu jiné aplikace).', 'bad');
+    const t = errText(e);
+    log(`Chyba v kroku „${step}“: ${t}`);
+    if (/globally disabled/i.test(t)) {
+      setStatus('Tento prohlížeč má Bluetooth pro webové stránky vypnuté. Použij Chrome/Edge na počítači, nebo Bluefy na iPhonu.', 'bad');
+    } else if (/opaque origin|not allowed|denied/i.test(t)) {
+      setStatus('Prohlížeč nepovolil Bluetooth pro tuto stránku. Otevři ji z webové adresy (https).', 'bad');
+    } else if (/adapter/i.test(t)) {
+      setStatus('Bluetooth v zařízení není zapnuté nebo dostupné.', 'bad');
+    } else if (/cancel|NotFoundError|no device/i.test(t) && step.startsWith('výběr')) {
+      setStatus('Výběr zrušen nebo měřák nenalezen. Je na něm zapnuté Bluetooth? Případně zaškrtni „Zobrazit všechna zařízení“ a zkus znovu.', 'warn');
+    } else if (step.startsWith('výběr')) {
+      setStatus(`Chyba při výběru zařízení: ${t}. Zaškrtni „Zobrazit všechna zařízení“ a zkus znovu.`, 'bad');
+    } else {
+      setStatus(`Chyba v kroku „${step}“: ${t}`, 'bad');
     }
-    else if (/opaque origin|not allowed|denied/i.test(e.message)) {
-      setStatus('Prohlížeč nepovolil Bluetooth pro stránku otevřenou ze souboru. Je potřeba ji otevřít z webové adresy (https).', 'bad');
-    }
-    else if (/adapter not available|adapter/i.test(e.message)) {
-      setStatus('Počítač nemá zapnuté nebo dostupné Bluetooth. Zapni ho ve Windows (Nastavení → Bluetooth).', 'bad');
-    }
-    else if (e.name === 'NotFoundError') { setStatus('Výběr zrušen nebo měřák nenalezen. Je na něm zapnuté Bluetooth?', 'warn'); }
-    else { setStatus('Chyba: ' + e.message, 'bad'); }
-    log('Chyba: ' + e.name + ': ' + e.message);
   }
 }
 
@@ -303,6 +353,16 @@ $('disconnect').addEventListener('click', disconnect);
 $('resend').addEventListener('click', sendEnable);
 $('save').addEventListener('click', save);
 $('clear').addEventListener('click', clearAll);
+$('copy').addEventListener('click', async () => {
+  const rows = state.rows.map((r, i) => `${i + 1}; ${r.time}; ${r.m.toFixed(4)} m; displej ${r.display || '-'}`);
+  const text = ['Test Bosch GLM', 'Prohlížeč: ' + navigator.userAgent, '', ...rows, '', ...state.log].join('\n');
+  try { await navigator.clipboard.writeText(text); $('copied').textContent = 'Zkopírováno – vlož do zprávy.'; }
+  catch (_) {
+    const range = document.createRange(); range.selectNodeContents($('log'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    $('copied').textContent = 'Záznam je označený – zkopíruj ho, nebo pošli snímek obrazovky.';
+  }
+});
 renderRows();
 
 // Exposed for automated checks only.
