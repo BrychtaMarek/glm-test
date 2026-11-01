@@ -229,6 +229,10 @@ async function connect() {
   let step = 'start';
   try {
     if (!navigator.bluetooth || !navigator.bluetooth.requestDevice) throw 'navigator.bluetooth.requestDevice není k dispozici';
+    if (navigator.bluetooth.getAvailability) {
+      try { log('Bluetooth dostupné: ' + await navigator.bluetooth.getAvailability()); }
+      catch (e) { log('getAvailability selhalo: ' + errText(e)); }
+    }
     const all = $('all').checked;
     const opts = all
       ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
