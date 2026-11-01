@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test Bosch GLM</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6a66;
+    --line: #e2e0da; --accent: #1f6feb; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151514; --panel:#1f1f1d; --text:#ecebe7; --muted:#a3a19b; --line:#34332f;
+            --accent:#4c8dff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin: 2px 0; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  label.chk { color: var(--muted); font-size: 14px; display:flex; gap:6px; align-items:center; }
+  #status { margin-top: 10px; font-weight: 600; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  #last { font: 600 44px/1.1 var(--mono); margin: 8px 0 2px; font-variant-numeric: tabular-nums; }
+  table { width:100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align:left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  td.num { font-family: var(--mono); }
+  td input { width: 110px; font: inherit; padding: 4px 6px; border:1px solid var(--line);
+             border-radius:6px; background: var(--bg); color: var(--text); }
+  #log { font: 12px/1.45 var(--mono); max-height: 220px; overflow:auto; white-space: pre-wrap;
+         background: var(--bg); border:1px solid var(--line); border-radius: 8px; padding: 8px; margin:0; }
+  .muted { color: var(--muted); font-size: 14px; }
+  #unsupported { display:none; border-color: var(--bad); }
+  .tablewrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Test laserového měřáku Bosch GLM</h1>
+  <p class="sub">Ověřuje, že naše aplikace umí přes Bluetooth přečíst naměřené hodnoty z GLM 50 C.</p>
+
+  <section id="unsupported">
+    <h2 class="bad">Tento prohlížeč Bluetooth nepodporuje</h2>
+    <p>Otevři stránku v <b>Google Chrome</b> nebo <b>Microsoft Edge</b> na počítači s Windows (nebo v Chrome na Androidu). Safari, Firefox a prohlížeče na iPhonu to neumí.</p>
+  </section>
+
+  <section>
+    <h2>Postup</h2>
+    <ol>
+      <li>Zapni měřák a zapni na něm Bluetooth (tlačítko s ikonou Bluetooth, na displeji se objeví symbol).</li>
+      <li>Měřák <b>nepáruj</b> ve Windows ani nemá být připojený k mobilu (MeasureOn vypnout).</li>
+      <li>Klikni na <b>Připojit měřák</b> a v okně vyber zařízení s názvem GLM.</li>
+      <li>Změř 5–10 různých vzdáleností tlačítkem na měřáku. Ke každé napiš do tabulky, co ukázal displej.</li>
+      <li>Klikni na <b>Uložit výsledek</b> a pošli soubor zpátky.</li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="row">
+      <button id="connect" class="primary">Připojit měřák</button>
+      <button id="disconnect" disabled>Odpojit</button>
+      <button id="resend" disabled title="Znovu pošle měřáku příkaz, aby posílal hodnoty">Znovu aktivovat</button>
+      <label class="chk"><input type="checkbox" id="all"> Zobrazit všechna zařízení (když se GLM v seznamu neobjeví)</label>
+    </div>
+    <div id="status" class="muted">Nepřipojeno</div>
+  </section>
+
+  <section>
+    <h2>Poslední hodnota</h2>
+    <div id="last">–</div>
+    <div class="muted" id="lastmm">Stiskni tlačítko měření na měřáku.</div>
+  </section>
+
+  <section>
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Naměřené hodnoty</h2>
+      <div class="row">
+        <button id="save" disabled>Uložit výsledek</button>
+        <button id="clear" disabled>Smazat</button>
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>#</th><th>Čas</th><th>Přijato (m)</th><th>Displej měřáku (m)</th><th>Rozdíl (mm)</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5" class="muted">Zatím nic.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Technický záznam</h2>
+    <p class="muted" style="margin-top:0">Všechna data z měřáku v surové podobě. Pomůže nám, když něco nebude fungovat.</p>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+// Bosch GLM BLE protocol as documented by the community (github.com/ketan/bosch-glm50c-rangefinder).
+const SERVICE_UUID = '02a6c0d0-0451-4000-b000-fb3210111989';
+const CHAR_UUID    = '02a6c0d1-0451-4000-b000-fb3210111989';
+const ENABLE_CMD   = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]);
+const MEAS_PREFIX  = [0xC0, 0x55, 0x10, 0x06];
+
+// Returns distance in metres, or null if the packet is not a measurement.
+function parseMeasurement(bytes) {
+  if (bytes.length < 11) return null;
+  for (let i = 0; i < MEAS_PREFIX.length; i++) if (bytes[i] !== MEAS_PREFIX[i]) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const m = dv.getFloat32(7, true);
+  return Number.isFinite(m) ? m : null;
+}
+
+const $ = id => document.getElementById(id);
+const state = { device: null, char: null, rows: [], log: [] };
+
+function hex(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(' '); }
+function now() { return new Date().toLocaleTimeString('cs-CZ'); }
+function fmt(m, d = 3) { return m.toLocaleString('cs-CZ', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+
+function log(msg) {
+  const line = `${now()}  ${msg}`;
+  state.log.push(line);
+  const el = $('log');
+  el.textContent += line + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  const el = $('status');
+  el.textContent = text;
+  el.className = cls || 'muted';
+}
+
+function setConnected(on) {
+  $('connect').disabled = on;
+  $('disconnect').disabled = !on;
+  $('resend').disabled = !on;
+}
+
+function renderRows() {
+  const tb = $('rows');
+  $('save').disabled = $('clear').disabled = state.rows.length === 0 && state.log.length === 0;
+  if (!state.rows.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">Zatím nic.</td></tr>'; return; }
+  tb.innerHTML = '';
+  state.rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td>${r.time}</td><td class="num">${fmt(r.m)}</td>
+      <td><input inputmode="decimal" placeholder="např. 2,345" value="${r.display ?? ''}"></td>
+      <td class="num diff"></td>`;
+    const inp = tr.querySelector('input');
+    const diffCell = tr.querySelector('.diff');
+    const update = () => {
+      r.display = inp.value.trim();
+      const v = parseFloat(r.display.replace(',', '.'));
+      if (!r.display || !Number.isFinite(v)) { diffCell.textContent = ''; diffCell.className = 'num diff'; return; }
+      const d = Math.round((r.m - v) * 1000);
+      diffCell.textContent = (d > 0 ? '+' : '') + d;
+      diffCell.className = 'num diff ' + (Math.abs(d) <= 1 ? 'ok' : 'bad');
+    };
+    inp.addEventListener('input', update);
+    update();
+    tb.appendChild(tr);
+  });
+}
+
+function onNotify(event) {
+  const v = event.target.value;
+  const bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  log('← ' + hex(bytes));
+  const m = parseMeasurement(bytes);
+  if (m === null) return;
+  state.rows.push({ time: now(), m, raw: hex(bytes) });
+  $('last').textContent = fmt(m) + ' m';
+  $('lastmm').textContent = Math.round(m * 1000) + ' mm';
+  renderRows();
+}
+
+async function sendEnable() {
+  const c = state.char;
+  try {
+    if (c.properties.write && c.writeValueWithResponse) await c.writeValueWithResponse(ENABLE_CMD);
+    else if (c.writeValueWithoutResponse) await c.writeValueWithoutResponse(ENABLE_CMD);
+    else await c.writeValue(ENABLE_CMD);
+    log('→ ' + hex(ENABLE_CMD) + '  (aktivační příkaz)');
+  } catch (e) {
+    log('Chyba při odeslání aktivačního příkazu: ' + e.message);
+    try { await c.writeValueWithoutResponse(ENABLE_CMD); log('→ ' + hex(ENABLE_CMD) + '  (bez potvrzení)'); }
+    catch (e2) { log('Ani bez potvrzení to nešlo: ' + e2.message); }
+  }
+}
+
+async function connect() {
+  try {
+    const opts = $('all').checked
+      ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
+      : { filters: [{ namePrefix: 'GLM' }, { services: [SERVICE_UUID] }], optionalServices: [SERVICE_UUID] };
+    setStatus('Vyber měřák v okně prohlížeče…', 'muted');
+    const device = await navigator.bluetooth.requestDevice(opts);
+    state.device = device;
+    log(`Vybráno zařízení: ${device.name || '(bez názvu)'}`);
+    device.addEventListener('gattserverdisconnected', () => {
+      log('Měřák se odpojil.');
+      setStatus('Odpojeno', 'warn');
+      setConnected(false);
+    });
+    setStatus('Připojuji…', 'muted');
+    const server = await device.gatt.connect();
+    log('Připojeno k GATT.');
+    let service;
+    try { service = await server.getPrimaryService(SERVICE_UUID); }
+    catch (e) {
+      log('Služba Bosch nenalezena: ' + e.message);
+      setStatus('Zařízení nemá očekávanou Bluetooth službu – je to opravdu GLM 50 C?', 'bad');
+      device.gatt.disconnect();
+      return;
+    }
+    const ch = await service.getCharacteristic(CHAR_UUID);
+    state.char = ch;
+    const p = ch.properties;
+    log(`Charakteristika: notify=${p.notify} indicate=${p.indicate} write=${p.write} writeWithoutResponse=${p.writeWithoutResponse}`);
+    ch.addEventListener('characteristicvaluechanged', onNotify);
+    await ch.startNotifications();
+    log('Odběr hodnot zapnut.');
+    await new Promise(r => setTimeout(r, 500));
+    await sendEnable();
+    setConnected(true);
+    setStatus(`Připojeno: ${device.name || 'měřák'} – měř tlačítkem na měřáku`, 'ok');
+  } catch (e) {
+    if (/globally disabled/i.test(e.message)) {
+      setStatus('Tento prohlížeč má Bluetooth pro webové stránky vypnuté. Otevři soubor v Google Chrome nebo Microsoft Edge (ne v Brave, Opeře ani v náhledu jiné aplikace).', 'bad');
+    }
+    else if (/opaque origin|not allowed|denied/i.test(e.message)) {
+      setStatus('Prohlížeč nepovolil Bluetooth pro stránku otevřenou ze souboru. Je potřeba ji otevřít z webové adresy (https).', 'bad');
+    }
+    else if (/adapter not available|adapter/i.test(e.message)) {
+      setStatus('Počítač nemá zapnuté nebo dostupné Bluetooth. Zapni ho ve Windows (Nastavení → Bluetooth).', 'bad');
+    }
+    else if (e.name === 'NotFoundError') { setStatus('Výběr zrušen nebo měřák nenalezen. Je na něm zapnuté Bluetooth?', 'warn'); }
+    else { setStatus('Chyba: ' + e.message, 'bad'); }
+    log('Chyba: ' + e.name + ': ' + e.message);
+  }
+}
+
+function disconnect() {
+  if (state.device && state.device.gatt.connected) state.device.gatt.disconnect();
+}
+
+function save() {
+  const lines = [];
+  lines.push('Test Bosch GLM – výsledek');
+  lines.push('Datum: ' + new Date().toLocaleString('cs-CZ'));
+  lines.push('Zařízení: ' + (state.device?.name || '-'));
+  lines.push('Prohlížeč: ' + navigator.userAgent);
+  lines.push('');
+  lines.push('#;čas;přijato_m;displej_m;rozdíl_mm;surová_data');
+  state.rows.forEach((r, i) => {
+    const v = parseFloat((r.display || '').replace(',', '.'));
+    const d = Number.isFinite(v) ? Math.round((r.m - v) * 1000) : '';
+    lines.push([i + 1, r.time, r.m.toFixed(4), r.display || '', d, r.raw].join(';'));
+  });
+  lines.push('');
+  lines.push('Technický záznam:');
+  lines.push(...state.log);
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'glm-test-vysledek.txt';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function clearAll() {
+  state.rows = []; state.log = [];
+  $('log').textContent = '';
+  $('last').textContent = '–';
+  $('lastmm').textContent = 'Stiskni tlačítko měření na měřáku.';
+  renderRows();
+}
+
+if (!('bluetooth' in navigator)) {
+  $('unsupported').style.display = 'block';
+  $('connect').disabled = true;
+  setStatus('Bluetooth v tomto prohlížeči není dostupné.', 'bad');
+} else if (!window.isSecureContext) {
+  setStatus('Stránku otevři ze souboru nebo přes https – jinak prohlížeč Bluetooth nepovolí.', 'bad');
+}
+
+$('connect').addEventListener('click', connect);
+$('disconnect').addEventListener('click', disconnect);
+$('resend').addEventListener('click', sendEnable);
+$('save').addEventListener('click', save);
+$('clear').addEventListener('click', clearAll);
+renderRows();
+
+// Exposed for automated checks only.
+window.__glm = { parseMeasurement, onNotify, state };
+</script>
+</body>
+</html>
